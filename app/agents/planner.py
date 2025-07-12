@@ -2,7 +2,7 @@
 """
 Planner Agent
 ─────────────
-Turns a user question into execution steps.
+Turns a user question into a list of execution steps.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from app.services.ticker_resolver import resolve_one
 
 PLAN = List[Dict]
 
+# Build lookup: raw_token → (statement, friendly_key)
 ALL_METRICS: dict[str, tuple[str, str]] = {
     raw.lower(): (stmt, friendly)
     for stmt, mapping in STATEMENT_MAP.items()
@@ -21,21 +22,32 @@ ALL_METRICS: dict[str, tuple[str, str]] = {
 }
 
 
+# Common stop words to strip from the company phrase
+_STOP_WORDS = {
+    "what","give","show","find","please","me","for","the","a","an","of","and","in","on","to","is","was"
+}
+
+
 async def plan(question: str) -> PLAN:
     q_lc = question.lower()
 
-    # 1) price rule
+    # 1) Price queries
     if "price" in q_lc:
         return [{"agent": "stock_price", "query": question}]
 
-    # 2) metric tokens
+    # 2) Financial metrics
     tokens = _find_metric_tokens(q_lc)
     if tokens:
-        # 2a) try resolving a standalone company name
-        name = _extract_company_name(question)
-        ticker = await resolve_one(name) if name else None
+        # --- extract the phrase before the first metric token ---
+        first = tokens[0]
+        prefix_match = re.split(rf"\b{re.escape(first)}\b", question, flags=re.IGNORECASE)[0]
+        # tokenize, remove stop words
+        words = re.findall(r"\b\w+\b", prefix_match)
+        company_phrase = " ".join(w for w in words if w.lower() not in _STOP_WORDS).strip()
 
-        # 2b) fallback to regex-based ticker (e.g. "(AAPL)")
+        # resolve to ticker (fuzzy / DB / FMP)
+        ticker = await resolve_one(company_phrase) if company_phrase else None
+        # fallback to literal ticker in parentheses or ALL-CAPS
         if not ticker:
             ticker = _guess_ticker_fallback(question)
 
@@ -57,33 +69,26 @@ async def plan(question: str) -> PLAN:
                 })
         return plan_steps
 
-    # 3) fallback
+    # 3) Fallback retrieval agent
     return [{"agent": "documents", "query": question}]
 
 
 def _find_metric_tokens(text: str) -> list[str]:
+    """
+    Return every metric raw token present (spaces ignored, case-insensitive).
+    """
     compact = text.replace(" ", "")
     return [tok for tok in ALL_METRICS if tok in compact]
 
 
-def _extract_company_name(text: str) -> str | None:
-    """
-    Find the first capitalized word (not at sentence start)
-    that is not a generic stop word.
-    """
-    stop = {"What", "Give", "Show", "For", "And", "The", "Find"}
-    words = re.findall(r"\b([A-Z][a-z]+)\b", text)
-    for w in words:
-        if w not in stop:
-            return w
-    return None
-
-
 def _guess_ticker_fallback(raw: str) -> str | None:
-    # (AAPL)
+    """
+    Last-chance extraction of a literal ticker:
+      - (AAPL)
+      - ANY ALL-CAPS WORD
+    """
     m = re.search(r"\(([A-Z]{1,5})\)", raw)
     if m:
         return m.group(1)
-    # lone ALL-CAPS
     m = re.search(r"\b([A-Z]{2,5})\b", raw)
     return m.group(1) if m else None
