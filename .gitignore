@@ -1,0 +1,30 @@
+outputs/
+
+# ────────────────────────── Python / FastAPI ─────────────────────────
+# virtual-envs
+.venv/
+venv/
+
+# byte-code / cache
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+
+# editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# logs & local outputs
+logs/
+*.log
+outputs/
+
+# env / secrets
+
+# OS stuff
+.DS_Store
+Thumbs.db
