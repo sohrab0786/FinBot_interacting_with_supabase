@@ -18,7 +18,7 @@ class ChatRequest(BaseModel):
 @router.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     # 1️⃣ plan
-    plan_steps = plan(req.query)
+    plan_steps = await plan(req.query)
 
     # 2️⃣ execute
     context_parts = []
