@@ -4,12 +4,12 @@ import re
 from typing import List, Dict
 
 from app.constants.metrics import STATEMENT_MAP
-from app.services.ticker_resolver import resolve_one  # LLM+DB resolver
+from app.services.ticker_resolver import resolve_one
 
 PLAN = List[Dict]
 
 # raw_token → (statement, friendly_key)
-ALL_METRICS: dict[str, tuple[str, str]] = {
+ALL_METRICS = {
     raw.lower(): (stmt, friendly)
     for stmt, mapping in STATEMENT_MAP.items()
     for friendly, raw in mapping.items()
@@ -17,37 +17,30 @@ ALL_METRICS: dict[str, tuple[str, str]] = {
 
 
 async def plan(question: str) -> PLAN:
-    """
-    1) If 'price' in question → stock_price
-    2) Extract fiscal_year and period
-    3) Find all metric tokens
-    4) Resolve ticker via LLM-first resolve_one(question)
-    5) Fallback to regex (_fallback_ticker) if needed
-    6) Emit one financial step per statement
-    """
     q_lc = question.lower()
 
     # 1) price rule
     if "price" in q_lc:
         return [{"agent": "stock_price", "query": question}]
 
-    # 2) capture year (e.g. 2023)
-    ym = re.search(r"\b(20\d{2})\b", question)
-    fiscal_year = int(ym.group(1)) if ym else None
+    # 2) capture explicit year or "last N years"
+    year_match = re.search(r"\b(20\d{2})\b", question)
+    fiscal_year = int(year_match.group(1)) if year_match else None
 
-    # 3) metric tokens
+    last_n_match = re.search(r"last\s+(\d+)\s+years", q_lc)
+    last_n = int(last_n_match.group(1)) if last_n_match else None
+
+    # 3) find all metric tokens
     tokens = _find_metric_tokens(q_lc)
     if tokens:
-        # 4) LLM‐based ticker resolution
-        ticker = await resolve_one(question)
-        # 5) fallback if LLM failed
-        if not ticker:
-            ticker = _fallback_ticker(question)
+        # resolve ticker from entire question
+        ticker = await resolve_one(question) or _fallback_ticker(question)
 
-        # 6) detect quarter vs FY
-        m = re.search(r"\b(Q[1-4])\b", question, re.IGNORECASE)
-        period = m.group(1).upper() if m else ("FY" if fiscal_year else None)
+        # 4) determine period
+        q_match = re.search(r"\b(Q[1-4])\b", question, re.IGNORECASE)
+        period = q_match.group(1).upper() if q_match else ("FY" if (fiscal_year or last_n) else None)
 
+        # 5) assemble plan steps
         steps: PLAN = []
         for stmt in ("IS", "BS", "CF"):
             ms = [ALL_METRICS[t][1] for t in tokens if ALL_METRICS[t][0] == stmt]
@@ -57,23 +50,24 @@ async def plan(question: str) -> PLAN:
                     "ticker": ticker,
                     "statement": stmt,
                     "metrics": ms,
-                    "fiscal_year": fiscal_year,
+                    # if last_n is set, don't filter by year; use limit
+                    **({} if last_n else {"fiscal_year": fiscal_year}),
                     "period": period,
+                    # always include limit: last_n or 1 if single-year
+                    "limit": last_n or (1 if fiscal_year else 4),
                 })
         return steps
 
-    # 7) fallback to retrieval agent
+    # 6) fallback
     return [{"agent": "documents", "query": question}]
 
 
 def _find_metric_tokens(text: str) -> list[str]:
-    """Return every metric raw token present (spaces removed, case-insensitive)."""
     compact = text.replace(" ", "")
     return [tok for tok in ALL_METRICS if tok in compact]
 
 
 def _fallback_ticker(raw: str) -> str | None:
-    """Last-ditch: literal (AAPL) or any ALL-CAPS word."""
     m = re.search(r"\(([A-Z]{1,5})\)", raw)
     if m:
         return m.group(1)

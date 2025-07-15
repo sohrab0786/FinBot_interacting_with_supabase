@@ -9,12 +9,17 @@ async def stream_chat(
     """
     Yield tokens from Ollama (provider=http) or OpenAI cloud (provider=openai)
     """
+    print("[DEBUG] LLM stream_chat called. Message preview:", messages[0]["content"][:300], "...\n---END PREVIEW---\n")
     if settings.llm_provider == "openai":
         async for tok in _stream_openai(messages):
+            print("[DEBUG] LLM token:", repr(tok))
             yield tok
+        print("[DEBUG] LLM stream ended (openai)")
     elif settings.llm_provider == "http":
         async for tok in _stream_http(messages):
+            print("[DEBUG] LLM token:", repr(tok))
             yield tok
+        print("[DEBUG] LLM stream ended (http)")
     else:
         raise RuntimeError(f"Unsupported LLM_PROVIDER={settings.llm_provider}")
 

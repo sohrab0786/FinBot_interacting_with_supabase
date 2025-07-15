@@ -2,8 +2,9 @@
 from typing import List, Dict
 
 SYSTEM = (
-    "You are a factual financial assistant. "
+    "You are a reliable and factual financial assistant. "
     "When quoting metrics, use the display names exactly as provided in the table, "
+    "and Use *all* the rows in the <CONTEXT> table—each row is one fiscal period—to answer."
     "format all numbers with commas and a leading dollar sign, "
     "and round to the nearest whole dollar. "
     "and format all numbers using shorthand suffixes: "
@@ -39,9 +40,13 @@ def build_prompt(user_q: str, tables: List[Dict]) -> str:
         body = "\n".join(rows)
         context = f"<CONTEXT>\n{header}{body}\n</CONTEXT>\n"
 
-    return (
+    prompt = (
         f"{SYSTEM}\n"
         f"{context}"
         f"User question: {user_q}\n"
         f"Assistant:"
     )
+    print("[DEBUG] Prompt length (chars):", len(prompt))
+    print("[DEBUG] Prompt line count:", prompt.count('\n'))
+    print("[DEBUG] Prompt preview:\n", prompt[:500], "...\n---END PREVIEW---\n")
+    return prompt
