@@ -1,36 +1,40 @@
-# app/agents/financial.py
 from typing import List, Dict, Literal
-
 from app.core import db
 from app.core.config import settings
 from app.constants.metrics import STATEMENT_MAP
-# from app.services.fmp_client import fetch_facts_fmp   # to implement later
-
+from typing import Union, List
 Statement = Literal["IS", "BS", "CF"]
-
 
 async def run(
     ticker: str,
     statement: Statement,
     metrics: List[str] | None = None,
     fiscal_year: int | None = None,
-    period: str | None = "FY",
+    period: str | None = None,
     limit: int = 8,
 ) -> List[Dict]:
-    """
-    Public entrypoint for the Financial Agent.
-    Routes to Supabase SQL or (future) FMP branch.
-    """
-    if settings.data_source == "supabase":
-        return await _fetch_from_supabase(
-            ticker, statement, metrics, fiscal_year, period, limit
-        )
-    # elif settings.data_source == "fmp":
-    #     return await fetch_facts_fmp(…)
-    else:
+    print(f"\n🚧 financial.run: statement={statement}, metrics={metrics}, fiscal_year={fiscal_year}, period={period}, limit={limit}")
+    if settings.data_source != "supabase":
         raise RuntimeError(f"Unknown DATA_SOURCE {settings.data_source}")
 
+    return await _fetch_from_supabase(
+        ticker, statement, metrics, fiscal_year, period, limit
+    )
 
+def is_quarterly_request(period: Union[str, List[str], None], limit: int) -> bool:
+    if isinstance(period, list):
+        return all(p in {"Q1", "Q2", "Q3", "Q4"} for p in period)
+
+    if period in {"Q1", "Q2", "Q3", "Q4"}:
+        return True
+
+    if period is None and limit and limit <= 4:
+        return True
+
+    if period == "Q":  # e.g., normalized from extraction
+        return True
+
+    return False
 async def _fetch_from_supabase(
     ticker: str,
     statement: Statement,
@@ -39,24 +43,12 @@ async def _fetch_from_supabase(
     period: str | None,
     limit: int,
 ) -> List[Dict]:
-    """
-    Fetch rows from financial.financial_fact, exactly matching:
-    • ticker
-    • statement
-    • any of the requested metrics
-    • (optional) fiscal_year
-    • (optional) fiscal_period
-    • LIMIT to the most recent `limit` rows
-    """
-    # 1) Map friendly → raw metric names
     metric_map = STATEMENT_MAP[statement]
     raw_metrics = (
         [metric_map[m] for m in metrics if m in metric_map]
-        if metrics
-        else list(metric_map.values())
+        if metrics else list(metric_map.values())
     )
 
-    # 2) Build base SQL & params
     sql = """
       SELECT metric, fiscal_year, fiscal_period, value
       FROM financial.financial_fact
@@ -65,32 +57,63 @@ async def _fetch_from_supabase(
         AND metric = ANY($3::text[])
     """
     params: list = [ticker, statement, raw_metrics]
+    reverse = False
+    order_clause = ""
 
-    # 3) Optional single-year filter (skip if using last-N-years)
-    if fiscal_year is not None:
+        # New Filtering logic
+    is_quarterly = is_quarterly_request(period, limit)
+    if isinstance(fiscal_year, list):
+        sql += f" AND fiscal_year = ANY(${len(params)+1}::int[])"
+        params.append(fiscal_year)
+    elif fiscal_year is not None:
         sql += f" AND fiscal_year = ${len(params)+1}"
         params.append(fiscal_year)
 
-    # 4) Exact period filter (e.g. 'FY' or 'Q1')
-    if period:
-        sql += f" AND fiscal_period = ${len(params)+1}"
-        params.append(period)
+        if isinstance(period, list):
+            sql += f" AND fiscal_period = ANY(${len(params)+1}::text[])"
+            params.append(period)
+            order_clause = " ORDER BY fiscal_year DESC, fiscal_period DESC"
+            reverse = False
 
-    # 5) Order most recent first, then LIMIT
-    sql += f" ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT {limit}"
+        elif period in {"Q1", "Q2", "Q3", "Q4"}:
+            sql += f" AND fiscal_period = ${len(params)+1}"
+            params.append(period)
+            order_clause = " ORDER BY fiscal_year DESC"
 
-    # 6) Execute & debug-log
+        else:
+            sql += f" AND fiscal_period = ${len(params)+1}"
+            params.append("FY")
+            order_clause = " ORDER BY fiscal_year DESC"
+    elif is_quarterly:
+        sql += " AND fiscal_period IN ('Q1', 'Q2', 'Q3', 'Q4')"
+        order_clause = " ORDER BY fiscal_year DESC, fiscal_period DESC"
+        reverse = False
+
+    else:
+        sql += " AND fiscal_period = 'FY'"
+        order_clause = " ORDER BY fiscal_year DESC"
+        reverse = True
+    if not order_clause:
+        print("⚠️ No order clause detected — using fallback ordering")
+        order_clause = " ORDER BY fiscal_year DESC"
+
+    sql += order_clause
+
+    # Apply LIMIT if not overridden by FY + known fiscal_year
+    if limit:
+       sql += f" LIMIT {limit}"
     async with db.pool.acquire() as conn:
-        print("\n📊  SQL:", sql.replace("\n", " "))
-        print("\n📊  PARAMS:", params)
+        print("\n📊 SQL:", sql.replace("\n", " "))
+        print("📊 PARAMS:", params)
         rows = await conn.fetch(sql, *params)
-        print(f"📊  ROWS:{len(rows)}  sample→", rows[:4], "\n")
+        if reverse:
+            rows = list(reversed(rows))
+        print(f"📊 ROWS: {len(rows)} →", rows[:4])
 
-    # 7) Reverse-map raw → friendly and cast
     reverse_map = {v: k for k, v in metric_map.items()}
     return [
         {
-            "metric": reverse_map[r["metric"]],
+            "metric": reverse_map.get(r["metric"], r["metric"]),
             "fiscal_year": r["fiscal_year"],
             "period": r["fiscal_period"],
             "value": float(r["value"]) if r["value"] is not None else None,

@@ -9,6 +9,9 @@ import re
 from typing import List, Dict
 from app.core import db
 from app.core.llm import stream_chat
+# Top of file
+
+
 
 # ─── LLM-based single-ticker extraction ─────────────────────────────────
 async def _llm_ticker(question: str) -> str | None:
@@ -57,17 +60,16 @@ async def _db_ticker(term: str) -> str | None:
 
 # ─── Public single-ticker resolver ──────────────────────────────────────
 async def resolve_one(question: str) -> str | None:
-    # 1) LLM extract
+    # Try LLM extraction
     ticker = await _llm_ticker(question)
     if ticker:
         return ticker
-    # 2) Derive a short search term (words before 'for' or before metrics)
+    # Use normalized question for DB fallback too
     term = question.split("for", 1)[0]
     words = re.findall(r"[A-Za-z]+", term)
     stop = {"what","give","show","me","and","the","of","in"}
     term = " ".join(w for w in words if w.lower() not in stop)
     return await _db_ticker(term)
-
 
 # ─── Public multi-suggest for autocomplete ───────────────────────────────
 async def suggest(term: str, limit: int = 8) -> List[Dict]:

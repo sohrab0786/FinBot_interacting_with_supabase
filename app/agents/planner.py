@@ -1,70 +1,102 @@
-# app/agents/planner.py
 from __future__ import annotations
 import re
 from typing import List, Dict
 
 from app.constants.metrics import STATEMENT_MAP
 from app.services.ticker_resolver import resolve_one
+from app.services.normalize_question import normalize_question, fallback_normalize_phrases
+from app.services.extract_periods_with_llm import extract_period_info_llm
+from app.services.suggest_queries import suggest_queries
 
 PLAN = List[Dict]
 
 # raw_token → (statement, friendly_key)
 ALL_METRICS = {
-    raw.lower(): (stmt, friendly)
+    friendly.lower().replace("_", " "): (stmt, friendly)
     for stmt, mapping in STATEMENT_MAP.items()
-    for friendly, raw in mapping.items()
+    for friendly in mapping
+}
+
+# statement → agent
+STATEMENT_TO_AGENT = {
+    "IS": "financial",
+    "BS": "financial",
+    "CF": "financial",
+    "RM": "ratios",
+    "KM": "ratios",
 }
 
 
 async def plan(question: str) -> PLAN:
+    question = await normalize_question(question)
+    question = fallback_normalize_phrases(question)
+    if not question:
+        return suggest_queries(question)
+
     q_lc = question.lower()
 
-    # 1) price rule
-    if "price" in q_lc:
-        return [{"agent": "stock_price", "query": question}]
+    # Extract all years mentioned in the query (supports comparison queries)
+    year_matches = re.findall(r"\b(20\d{2})\b", question)
+    years = list(map(int, year_matches)) if year_matches else []
 
-    # 2) capture explicit year or "last N years"
-    year_match = re.search(r"\b(20\d{2})\b", question)
-    fiscal_year = int(year_match.group(1)) if year_match else None
+    # Extract period info using LLM
+    limit, period = await extract_period_info_llm(question)
+    print(f"Extracted from extract_period_info_llm: limit={limit}, period={period} for question: {question}")
 
-    last_n_match = re.search(r"last\s+(\d+)\s+years", q_lc)
-    last_n = int(last_n_match.group(1)) if last_n_match else None
+    # Default fallback if fiscal year present but period missing
+    if years and not period:
+        period = "FY"
+        limit = limit or 1
+    elif period == "FY":
+        limit = limit or 1
 
-    # 3) find all metric tokens
+    # Detect metric tokens
     tokens = _find_metric_tokens(q_lc)
     if tokens:
-        # resolve ticker from entire question
         ticker = await resolve_one(question) or _fallback_ticker(question)
-
-        # 4) determine period
-        q_match = re.search(r"\b(Q[1-4])\b", question, re.IGNORECASE)
-        period = q_match.group(1).upper() if q_match else ("FY" if (fiscal_year or last_n) else None)
-
-        # 5) assemble plan steps
         steps: PLAN = []
-        for stmt in ("IS", "BS", "CF"):
+
+        for stmt in STATEMENT_TO_AGENT:
             ms = [ALL_METRICS[t][1] for t in tokens if ALL_METRICS[t][0] == stmt]
             if ms:
-                steps.append({
-                    "agent": "financial",
-                    "ticker": ticker,
-                    "statement": stmt,
-                    "metrics": ms,
-                    # if last_n is set, don't filter by year; use limit
-                    **({} if last_n else {"fiscal_year": fiscal_year}),
-                    "period": period,
-                    # always include limit: last_n or 1 if single-year
-                    "limit": last_n or (1 if fiscal_year else 4),
-                })
+                if years:
+                    for y in years:
+                        step = {
+                            "agent": STATEMENT_TO_AGENT[stmt],
+                            "ticker": ticker,
+                            "statement": stmt,
+                            "metrics": ms,
+                            "limit": limit,
+                            "fiscal_year": y,
+                        }
+                        if period:
+                            step["period"] = period
+                        steps.append(step)
+                else:
+                    step = {
+                        "agent": STATEMENT_TO_AGENT[stmt],
+                        "ticker": ticker,
+                        "statement": stmt,
+                        "metrics": ms,
+                        "limit": limit,
+                    }
+                    if period:
+                        step["period"] = period
+                    steps.append(step)
+
         return steps
 
-    # 6) fallback
-    return [{"agent": "documents", "query": question}]
+    return suggest_queries(question)
 
 
 def _find_metric_tokens(text: str) -> list[str]:
-    compact = text.replace(" ", "")
-    return [tok for tok in ALL_METRICS if tok in compact]
+    norm = text.lower().replace("_", " ")
+    tokens = []
+    for tok in sorted(ALL_METRICS.keys(), key=lambda x: -len(x)):  # longest match first
+        if re.search(rf"\b{re.escape(tok)}\b", norm):
+            tokens.append(tok)
+            norm = norm.replace(tok, "")  # remove matched to avoid overlap
+    return tokens
 
 
 def _fallback_ticker(raw: str) -> str | None:
@@ -73,3 +105,8 @@ def _fallback_ticker(raw: str) -> str | None:
         return m.group(1)
     m = re.search(r"\b([A-Z]{2,5})\b", raw)
     return m.group(1) if m else None
+
+
+# Optional: Detect comparison-type phrasing (not used but useful)
+def _is_comparison_query(q: str) -> bool:
+    return any(k in q.lower() for k in ["compare", "vs", "versus", "difference between"])
