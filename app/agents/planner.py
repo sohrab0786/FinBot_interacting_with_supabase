@@ -25,8 +25,6 @@ STATEMENT_TO_AGENT = {
     "RM": "ratios",
     "KM": "ratios",
 }
-
-
 async def plan(question: str) -> PLAN:
     question = await normalize_question(question)
     question = fallback_normalize_phrases(question)
@@ -52,6 +50,7 @@ async def plan(question: str) -> PLAN:
 
     # Detect metric tokens
     tokens = _find_metric_tokens(q_lc)
+    print(f"Detected tokens: {tokens} for question: {question}")
     if tokens:
         ticker = await resolve_one(question) or _fallback_ticker(question)
         steps: PLAN = []
@@ -90,14 +89,13 @@ async def plan(question: str) -> PLAN:
 
 
 def _find_metric_tokens(text: str) -> list[str]:
-    norm = text.lower().replace("_", " ")
+    norm = text.lower().replace("/", "").replace("_", " ")  # also normalize user input
     tokens = []
     for tok in sorted(ALL_METRICS.keys(), key=lambda x: -len(x)):  # longest match first
         if re.search(rf"\b{re.escape(tok)}\b", norm):
             tokens.append(tok)
             norm = norm.replace(tok, "")  # remove matched to avoid overlap
     return tokens
-
 
 def _fallback_ticker(raw: str) -> str | None:
     m = re.search(r"\(([A-Z]{1,5})\)", raw)
