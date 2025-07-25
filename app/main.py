@@ -1,11 +1,11 @@
-# app/main.py
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles  # ✅ ADD THIS
 
 from app.startup import register_startup_shutdown
 from app.api.v1 import router as api_v1_router
+from app.api.ui import router as ui_router
 from app.core.config import settings
-
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -15,7 +15,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
-    # CORS (relax in dev, tighten in prod)
+    # CORS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -24,12 +24,15 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Mount v1 API
+    # Mount routers
     app.include_router(api_v1_router, prefix="/v1")
+    app.include_router(ui_router)
 
-    # DB/Pool lifecycle
+    # ✅ MOUNT static responses folder for direct access (optional)
+    app.mount("/responses", StaticFiles(directory="responses"), name="responses")
+
+    # Lifecycle hooks
     register_startup_shutdown(app)
     return app
 
-
-app = create_app()   # ← Uvicorn imports this symbol
+app = create_app()

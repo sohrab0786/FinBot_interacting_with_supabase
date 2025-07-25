@@ -9,23 +9,39 @@ import re
 from typing import List, Dict
 from app.core import db
 from app.core.llm import stream_chat
+from fastapi.concurrency import run_in_threadpool
 # Top of file
-
-
-
-# ─── LLM-based single-ticker extraction ─────────────────────────────────
+from app.services.get_company_name_llm import extract_company_names_llm  # ← implement this if needed
+from app.core.db import supabase
+TICKER_REGEX = r"\b[A-Z]{1,5}\b"
+# ─── LLM-based single-ticker extraction with DB validation ─────────────
 async def _llm_ticker(question: str) -> str | None:
     messages = [
         {"role": "system", "content":
-            "Extract and return *only* the stock ticker symbol in uppercase "
-            "from the user’s query, without any extra text."},
+            "Return only the official stock ticker symbol in uppercase for a public U.S. company mentioned in the query. Respond with just the symbol (e.g., AAPL). Do not return anything else, not even punctuation."},
         {"role": "user", "content": question},
     ]
     buf = []
     async for tok in stream_chat(messages):
         buf.append(tok)
     cand = "".join(buf).strip().upper()
-    return cand if re.fullmatch(r"[A-Z]{1,5}", cand) else None
+    # Basic format check
+    if not re.fullmatch(r"[A-Z]{1,5}", cand):
+        print(f"[WARN] LLM returned invalid ticker format: '{cand}'")
+        return None
+
+    # Validate against DB
+    sql = "SELECT symbol FROM refdata.companies WHERE symbol = $1"
+    try:
+        conn = await db.get_conn()
+        row = await conn.fetchrow(sql, cand)
+    finally:
+        await db.pool.release(conn)
+    if row:
+        return row["symbol"]
+
+    print(f"[WARN] LLM returned unknown ticker: '{cand}'")
+    return None
 
 
 # ─── DB-based single-ticker fallback ────────────────────────────────────
@@ -41,8 +57,11 @@ async def _db_ticker(term: str) -> str | None:
         (similarity(c.company_name, q.term) * 100)::int DESC
       LIMIT 1;
     """
-    async with db.pool.acquire() as conn:
+    try:
+        conn = await db.get_conn()
         row = await conn.fetchrow(sql, term)
+    finally:
+        await db.pool.release(conn)
     if row:
         return row["ticker"]
     # ultimate fallback: best overall similarity
@@ -53,23 +72,61 @@ async def _db_ticker(term: str) -> str | None:
       ORDER BY similarity(c.company_name, q.term) DESC
       LIMIT 1;
     """
-    async with db.pool.acquire() as conn:
-        row = await conn.fetchrow(fallback_sql, term)
+    try:
+        conn = await db.get_conn()
+        row = await conn.fetchrow(sql, term)
+    finally:
+        await db.pool.release(conn)
     return row["ticker"] if row else None
 
 
 # ─── Public single-ticker resolver ──────────────────────────────────────
-async def resolve_one(question: str) -> str | None:
-    # Try LLM extraction
-    ticker = await _llm_ticker(question)
+
+
+async def get_ticker_for_company_name(name: str) -> str | None:
+    if not supabase:
+        return None
+
+    def fetch():
+        try:
+            response = supabase.table("company").select("ticker").ilike("name", f"%{name}%").limit(1).execute()
+            data = response.data if hasattr(response, "data") else response.get("data", [])
+            if data and isinstance(data, list) and "ticker" in data[0]:
+                return data[0]["ticker"]
+        except Exception as e:
+            print(f"[WARN] Failed to fetch ticker for {name}: {e}")
+        return None
+
+    return await run_in_threadpool(fetch)
+
+
+async def resolve_one(question_or_name: str) -> str | None:
+    ticker = await _llm_ticker(question_or_name)
     if ticker:
         return ticker
-    # Use normalized question for DB fallback too
-    term = question.split("for", 1)[0]
-    words = re.findall(r"[A-Za-z]+", term)
-    stop = {"what","give","show","me","and","the","of","in"}
-    term = " ".join(w for w in words if w.lower() not in stop)
-    return await _db_ticker(term)
+
+    # Try Supabase fallback
+    fallback_ticker = await get_ticker_for_company_name(question_or_name)
+    if fallback_ticker:
+        return fallback_ticker
+
+    # Try DB fuzzy fallback
+    ticker = await _db_ticker(question_or_name)
+    return ticker
+
+async def resolve_many(query: str) -> list[str]:
+    company_names = await extract_company_names_llm(query)
+    if not company_names:
+        return []
+    
+    tickers = []
+    for name in company_names:
+        # Normalize name for better resolution
+        name = name.strip().title()  # 'apple' → 'Apple'
+        ticker = await resolve_one(name)
+        if ticker:
+            tickers.append(ticker)
+    return tickers
 
 # ─── Public multi-suggest for autocomplete ───────────────────────────────
 async def suggest(term: str, limit: int = 8) -> List[Dict]:
@@ -99,6 +156,9 @@ async def suggest(term: str, limit: int = 8) -> List[Dict]:
         score DESC
       LIMIT $2;
     """
-    async with db.pool.acquire() as conn:
-        rows = await conn.fetch(sql, term, limit)
+    try:
+        conn = await db.get_conn()
+        rows = await conn.fetchrow(sql, term, limit)
+    finally:
+        await db.pool.release(conn)
     return [dict(r) for r in rows]

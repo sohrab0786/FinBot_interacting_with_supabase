@@ -1,67 +1,31 @@
 # app/services/prompt_utils.py
 
-from app.constants.metrics import RATIOS_METRICS, KEY_METRICS
+from app.services.metric_registry import metric_registry
+from app.services.metric_classification import classified_metrics  # ← You import the dictionary here
 
-# Set of raw metric names that should be displayed as percentages
-RATIO_METRICS = set(RATIOS_METRICS.values())
-VALUATION_PERCENT_METRICS = {
-    "returnOnAssets",
-    "returnOnEquity",
-    "returnOnCapitalEmployed",
-    "returnOnInvestedCapital",
-    "returnOnTangibleAssets",
-    "dividendYield",
-    "dividendYieldPercentage",
-    "dividendPayoutRatio",
-    "effectiveTaxRate",
-    "capexToRevenue",
-    "capexToOperatingCashFlow",
-    "capexToDepreciation",
-    "salesGeneralAndAdministrativeToRevenue",
-    "stockBasedCompensationToRevenue",
-    "researchAndDevelopementToRevenue",
-    "intangiblesToTotalAssets",
-    "incomeQuality",
-    "taxBurden",
-    "interestBurden",
-    "earningsYield",
-    "freeCashFlowYield"
+# Normalize to lowercase no-underscore for comparison
+def normalize_metric_id(name: str) -> str:
+    return name.strip().lower().replace("_", "")
+
+# Build fast lookup sets from classified_metrics
+VALUATION_PERCENT_NORM = {
+    normalize_metric_id(k)
+    for k, v in classified_metrics.items()
+    if v["value_type"] == "percent"
 }
 
-PERCENTAGE_METRICS = RATIO_METRICS.union(VALUATION_PERCENT_METRICS)
-
+PLAIN_RATIO_METRICS = {
+    normalize_metric_id(k)
+    for k, v in classified_metrics.items()
+    if v["value_type"] == "ratio"
+}
 
 def get_value_type(metric_id: str) -> str:
-    # Normalize: lowercase + remove underscores
-    normalized_id = metric_id.strip().lower().replace("_", "")
+    normalized_id = normalize_metric_id(metric_id)
 
-    ratio_metrics = {v.lower().replace("_", "") for v in RATIOS_METRICS.values()}
-    valuation_percent_metrics = {v.lower().replace("_", "") for v in VALUATION_PERCENT_METRICS}
-
-    # These ratios are plain (not dollar or percent)
-    plain_ratio_metrics = {
-        "currentratio",
-        "quickratio",
-        "cashratio",
-        "financialleverageratio",
-        "debttoequityratio",
-        "debttoassetsratio",
-        "debttocapitalratio",
-        "longtermdebttocapitalratio",
-        "interestratiocoverage",
-        "enterprisemultiple",
-        "workingcapitalturnoverratio",
-        "operatingcashflowratio",
-        "operatingcashflowsalesratio",
-        "shorttermoperatingcashflowcoverageratio",
-        "operatingcashflowcoverageratio",
-        "capitalexpenditurecoverageratio",
-        "dividendpaidandcapexcoverageratio",
-    }
-
-    if normalized_id in valuation_percent_metrics:
+    if normalized_id in VALUATION_PERCENT_NORM:
         return "percent"
-    elif normalized_id in plain_ratio_metrics or normalized_id in ratio_metrics:
+    elif normalized_id in PLAIN_RATIO_METRICS:
         return "plain"
     else:
         print(f"[DEBUG] Unknown metric type for '{metric_id}' → normalized: '{normalized_id}' (defaulting to 'dollar')")

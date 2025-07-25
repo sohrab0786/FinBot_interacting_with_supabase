@@ -1,10 +1,9 @@
+#app/services/normalize_question.py
 import re
 from typing import List, Dict
 from app.core import db
 from app.core.llm import stream_chat
 # Top of file
-
-
 async def normalize_question(raw_question: str) -> str:
     messages = [
         {
@@ -21,7 +20,6 @@ async def normalize_question(raw_question: str) -> str:
     async for token in stream_chat(messages):
         result.append(token)
     return "".join(result).strip()
-
 
 def fallback_normalize_phrases(text: str) -> str:
     replacements = {

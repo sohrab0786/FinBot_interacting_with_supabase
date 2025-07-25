@@ -1,7 +1,6 @@
 # app/services/query.py
 from app.core.llm import stream_chat
 import asyncio
-
 async def query_general_resolver(query: str) -> bool:
     """
     Ask the LLM to classify if the query is general/basic and DOES NOT require DB or structured data.
@@ -19,6 +18,5 @@ async def query_general_resolver(query: str) -> bool:
 
     async for tok in stream_chat([system_msg, user_msg]):
         response += tok
-
     response = response.strip().upper()
     return "GENERAL" in response

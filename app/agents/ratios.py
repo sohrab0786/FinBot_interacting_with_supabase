@@ -1,123 +1,120 @@
-from typing import List, Dict, Literal
+# File: app/agents/ratios.py
+
+from typing import List, Dict, Literal, Union
 from app.core import db
 from app.core.config import settings
-from app.constants.metrics import STATEMENT_MAP
-from typing import Union, List
-Statement = Literal["RM", "KM"]
+from app.services.metric_registry import get_metric
+from app.services.fetcher import is_quarterly_request
+Statement = Literal["RM", "KM"]  # Support both ratios and key metrics
 
 async def run(
     ticker: str,
     statement: Statement,
     metrics: List[str] | None = None,
-    fiscal_year: int | None = None,
-    period: str | None = None,
+    fiscal_year: int | List[int] | None = None,
+    period: str | List[str] | None = None,
     limit: int = 8,
 ) -> List[Dict]:
     print(f"\n🚧 ratios.run: statement={statement}, metrics={metrics}, fiscal_year={fiscal_year}, period={period}, limit={limit}")
     if settings.data_source != "supabase":
         raise RuntimeError(f"Unknown DATA_SOURCE {settings.data_source}")
 
+    table_name = "financial.ratios" if statement == "RM" else "financial.key_metrics"
+
     return await _fetch_from_supabase(
-        ticker, statement, metrics, fiscal_year, period, limit
+        table_name=table_name,
+        statement=statement,
+        ticker=ticker,
+        metrics=metrics,
+        fiscal_year=fiscal_year,
+        period=period,
+        limit=limit
     )
 
-def is_quarterly_request(period: Union[str, List[str], None], limit: int) -> bool:
-    if isinstance(period, list):
-        return all(p in {"Q1", "Q2", "Q3", "Q4"} for p in period)
-
-    if period in {"Q1", "Q2", "Q3", "Q4"}:
-        return True
-
-    if period is None and limit and limit <= 4:
-        return True
-
-    if period == "Q":  # e.g., normalized from extraction
-        return True
-
-    return False
 async def _fetch_from_supabase(
-    ticker: str,
+    table_name: str,
     statement: Statement,
+    ticker: str,
     metrics: List[str] | None,
-    fiscal_year: int | None,
-    period: str | None,
+    fiscal_year: Union[int, List[int], None],
+    period: Union[str, List[str], None],
     limit: int,
 ) -> List[Dict]:
-    table_name = "financial.ratios" if statement == "RM" else "financial.key_metrics"
-    metric_map = STATEMENT_MAP[statement]
-    raw_metrics = (
-        [metric_map[m] for m in metrics if m in metric_map]
-        if metrics
-        else list(metric_map.values())
-    )
+    raw_metrics = []
+    for m in metrics or []:
+        meta = get_metric(statement, m)
+        if meta is None:
+            print(f"[ERROR] Metric '{m}' not found in registry for statement '{statement}'")
+            continue
+        raw_metrics.append(meta["column"])
 
     sql = f"""
-      SELECT metric, fiscal_year, fiscal_period, value
+      SELECT  ticker, metric, fiscal_year, fiscal_period, value
       FROM {table_name}
       WHERE ticker = $1
-        AND metric = ANY($2::text[])
     """
-    params = [ticker, raw_metrics]
-    reverse = False
-    order_clause = ""
+    params: list = [ticker]
+    param_idx = 2
 
-    is_quarterly = is_quarterly_request(period, limit)
+    if raw_metrics:
+        sql += f" AND metric = ANY(${param_idx}::text[])"
+        params.append(raw_metrics)
+        param_idx += 1
+
     if isinstance(fiscal_year, list):
-        sql += f" AND fiscal_year = ANY(${len(params)+1}::int[])"
+        sql += f" AND fiscal_year = ANY(${param_idx}::int[])"
         params.append(fiscal_year)
+        param_idx += 1
     elif fiscal_year is not None:
-        sql += f" AND fiscal_year = ${len(params)+1}"
+        sql += f" AND fiscal_year = ${param_idx}"
         params.append(fiscal_year)
+        param_idx += 1
 
-        if isinstance(period, list):
-            sql += f" AND fiscal_period = ANY(${len(params)+1}::text[])"
-            params.append(period)
-            order_clause = " ORDER BY fiscal_year DESC, fiscal_period DESC"
-            reverse = False
-
-        elif period in {"Q1", "Q2", "Q3", "Q4"}:
-            sql += f" AND fiscal_period = ${len(params)+1}"
-            params.append(period)
-            order_clause = " ORDER BY fiscal_year DESC"
-
-        else:
-            sql += f" AND fiscal_period = ${len(params)+1}"
-            params.append("FY")
-            order_clause = " ORDER BY fiscal_year DESC"
-    elif is_quarterly:
+    if period == "Q":
         sql += " AND fiscal_period IN ('Q1', 'Q2', 'Q3', 'Q4')"
-        order_clause = " ORDER BY fiscal_year DESC, fiscal_period DESC"
-        reverse = False
-
+    elif isinstance(period, list):
+        sql += f" AND fiscal_period = ANY(${param_idx}::text[])"
+        params.append(period)
+        param_idx += 1
+    elif period in {"Q1", "Q2", "Q3", "Q4"}:
+        sql += f" AND fiscal_period = ${param_idx}"
+        params.append(period)
+        param_idx += 1
+    elif is_quarterly_request(period, limit):
+        sql += " AND fiscal_period IN ('Q1', 'Q2', 'Q3', 'Q4')"
     else:
         sql += " AND fiscal_period = 'FY'"
-        order_clause = " ORDER BY fiscal_year DESC"
-        reverse = True
-    if not order_clause:
-        print("⚠️ No order clause detected — using fallback ordering")
-        order_clause = " ORDER BY fiscal_year DESC"
+    sql += " ORDER BY fiscal_year DESC, fiscal_period DESC"
 
-    sql += order_clause
-
-    # Apply LIMIT if not overridden by FY + known fiscal_year
-    if limit:
-       sql += f" LIMIT {limit}"
-
-    async with db.pool.acquire() as conn:
+    if (not fiscal_year or not period) and limit:
+        sql += f" LIMIT {limit}"
+    rows = []  # Always initialize rows
+    try:
         print("\n📊 SQL:", sql.replace("\n", " "))
         print("📊 PARAMS:", params)
+        conn = await db.get_conn()
         rows = await conn.fetch(sql, *params)
-        if reverse:
-            rows = list(reversed(rows))
-        print(f"📊 ROWS: {len(rows)} →", rows[:4])
+        print(f"📊 ROWS: {len(rows)} →", rows[:])
+        for row in rows:
+            print(dict(row))
+    finally:
+        await db.pool.release(conn)
+    results = []
+    for r in rows:
+        # Reverse match: find the original token from metrics that matches this DB column
+        for token in metrics or []:
+            meta = get_metric(statement, token)
+            if meta is None:
+                continue
+            column = meta["column"]
+            if r["metric"] == column:
+                results.append({
+                    "ticker": r.get("ticker", ticker),  # fallback to known ticker
+                    "metric": column,
+                    "raw_metric": token,
+                    "fiscal_year": r["fiscal_year"],
+                    "period": r["fiscal_period"],
+                    "value": float(r["value"]) if r["value"] is not None else None,
+                })
 
-    reverse_map = {v: k for k, v in metric_map.items()}
-    return [
-        {
-            "metric": reverse_map.get(r["metric"], r["metric"]),
-            "fiscal_year": r["fiscal_year"],
-            "period": r["fiscal_period"],
-            "value": float(r["value"]) if r["value"] is not None else None,
-        }
-        for r in rows
-    ]
+    return results
