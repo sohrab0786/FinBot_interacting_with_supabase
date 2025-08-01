@@ -66,7 +66,6 @@ async def chat_endpoint(req: ChatRequest):
     full_response = ""
     async for chunk in stream_chat(chat_payload):
         full_response += chunk
-
     # Save and redirect
     session_id = save_response(full_response)
     return RedirectResponse(url=f"/result?session_id={session_id}", status_code=302)

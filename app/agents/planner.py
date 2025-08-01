@@ -7,7 +7,7 @@ from app.services.extract_periods_with_llm import extract_period_info_llm
 from app.services.suggest_queries import suggest_queries
 from app.services.ticker_resolver import resolve_many, resolve_one
 from collections import defaultdict
-PLAN = List[Dict]
+#PLAN = List[Dict]
 
 def camel_to_snake(name: str) -> str:
     s1 = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', name)
@@ -60,7 +60,7 @@ async def plan(user_query: str, metrics:List[str]) -> List[Dict]:
             ]
         }]
 
-    statement = get_statement_for_metric_set(metrics)
+    #statement = get_statement_for_metric_set(metrics)
     if not metrics or not tickers:
         suggestions = await suggest_queries(user_query)
         return [{

@@ -16,7 +16,6 @@ async def run(
     print(f"\n🚧 financial.run: statement={statement}, metrics={metrics}, fiscal_year={fiscal_year}, period={period}, limit={limit}")
     if settings.data_source != "supabase":
         raise RuntimeError(f"Unknown DATA_SOURCE {settings.data_source}")
-
     return await _fetch_from_supabase(
         table_name="financial.financial_fact",
         statement=statement,
@@ -26,8 +25,6 @@ async def run(
         period=period,
         limit=limit
     )
-
-
 async def _fetch_from_supabase(
     table_name: str,
     statement: Statement,
@@ -44,7 +41,6 @@ async def _fetch_from_supabase(
             print(f"[ERROR] Metric '{m}' not found in registry for statement '{statement}'")
             continue
         raw_metrics.append(meta["column"])
-
     sql = f"""
             SELECT  ticker, metric, fiscal_year, fiscal_period, value
             FROM financial.financial_fact
