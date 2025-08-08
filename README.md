@@ -10,7 +10,7 @@ InsightThread is a powerful backend service that extracts **ticker**, **financia
 - 🧠 Targets the correct financial schema and table dynamically
 - 📊 Presents data as a structured table and readable summary
 - 🔄 Supports real-time API interaction via a local UI
-- 💡 Designed to support general query output in HTML (coming soon)
+
 
 ---
 
@@ -27,6 +27,7 @@ python -m venv venv
 pip install -r requirements.txt
 copy .env_example .env  # Windows
 # cp .env_example .env  # Mac/Linux
+setup .env file with openai api key and supabase credentials.
 
 ▶️ How to Run
 Start the application with:
@@ -43,3 +44,4 @@ You can now input queries such as:
 
 🔮 Future Work
 🌐 Generate HTML output for general non financial queries
+
