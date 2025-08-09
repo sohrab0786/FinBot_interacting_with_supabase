@@ -19,8 +19,8 @@ InsightThread is a powerful backend service that extracts **ticker**, **financia
 Clone the repository and set up the environment:
 
 ```bash
-git clone https://github.com/your-username/insightthread.git
-cd insightthread
+git clone https://github.com/sohrab0786/FinBot_interacting_with_supabase.git
+cd FinBot_interacting_with_supabase
 python -m venv venv
 .\venv\Scripts\activate    # On Windows
 # source venv/bin/activate # On Mac/Linux
@@ -44,4 +44,5 @@ You can now input queries such as:
 
 🔮 Future Work
 🌐 Generate HTML output for general non financial queries
+
 
